@@ -18,6 +18,29 @@ import { FEISHU_CARD_TABLE_LIMIT, findMarkdownTablesOutsideCodeBlocks } from './
 type ReplyModeValue = 'auto' | 'static' | 'streaming';
 
 // ---------------------------------------------------------------------------
+// resolveStreamingFlags
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise the streaming switches across config shapes.
+ *
+ * Legacy plugin shape: `streaming: true` + `blockStreaming: true`.
+ * OpenClaw >=2026.8 doctor migrates those into the shared nested shape
+ * `streaming: { mode: 'off'|'partial'|'block'|'progress', block: { enabled } }`.
+ */
+export function resolveStreamingFlags(feishuCfg: FeishuConfig | undefined): {
+  streaming: boolean;
+  blockStreaming: boolean;
+} {
+  const raw = feishuCfg?.streaming;
+  const nested = raw && typeof raw === 'object' ? raw : undefined;
+  return {
+    streaming: raw === true || (nested?.mode !== undefined && nested.mode !== 'off'),
+    blockStreaming: feishuCfg?.blockStreaming === true || nested?.block?.enabled === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // resolveReplyMode
 // ---------------------------------------------------------------------------
 
@@ -32,8 +55,8 @@ export function resolveReplyMode(params: {
 }): ReplyModeValue {
   const { feishuCfg, chatType } = params;
 
-  // streaming 布尔总开关：仅 true 时允许流式，未设置或 false 一律 static
-  if (feishuCfg?.streaming !== true) return 'static';
+  // streaming 总开关：仅开启时允许流式，未设置或关闭一律 static
+  if (!resolveStreamingFlags(feishuCfg).streaming) return 'static';
 
   const replyMode = feishuCfg?.replyMode;
   if (!replyMode) return 'auto';
