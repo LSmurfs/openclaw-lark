@@ -1,5 +1,12 @@
 {
   "id": "openclaw-lark",
+  "cliCommands": [
+    {
+      "name": "feishu-diagnose",
+      "description": "Run Feishu plugin diagnostics",
+      "hasSubcommands": false
+    }
+  ],
   "channels": [
     "feishu"
   ],
@@ -51,7 +58,8 @@
       "feishu_wiki_space",
       "feishu_wiki_space_node",
       "feishu_task_section",
-      "feishu_ask_user_question"
+      "feishu_ask_user_question",
+      "feishu_stream_card_send"
     ]
   },
   "channelConfigs": {

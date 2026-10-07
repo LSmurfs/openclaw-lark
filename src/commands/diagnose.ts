@@ -15,6 +15,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import { resolveConfiguredSecretInputString } from 'openclaw/plugin-sdk/secret-input-runtime';
+import { redactSensitiveText } from 'openclaw/plugin-sdk/logging-core';
 
 interface DiagLogger {
   info: (message: string) => void;
@@ -37,6 +39,7 @@ function resolveGlobalConfig(config: OpenClawConfig): OpenClawConfig {
 import { assertLarkOk, formatLarkError } from '../core/api-error';
 import { resolveAnyEnabledToolsConfig } from '../core/tools-config';
 import type { LarkAccount } from '../core/types';
+import { getPluginVersion } from '../core/version';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,12 +83,24 @@ interface DiagReport {
 // Constants
 // ---------------------------------------------------------------------------
 
-const PLUGIN_VERSION = '2026.2.10';
 const LOG_READ_BYTES = 256 * 1024; // read last 256KB of log
 const MAX_ERROR_LINES = 20;
 /** Matches a timestamped log line: 2026-02-13T09:23:35.038Z [level]: ... */
 const TIMESTAMPED_LINE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 const ERROR_LEVEL_RE = /\[error\]|\[warn\]/i;
+
+async function resolveLogPath(config: OpenClawConfig): Promise<string> {
+  if (config.logging?.file) return config.logging.file;
+  const logDir = process.platform === 'win32' ? path.join(os.tmpdir(), 'openclaw') : '/tmp/openclaw';
+  try {
+    const files = (await fs.readdir(logDir)).filter((name) => /^openclaw-\d{4}-\d{2}-\d{2}\.log$/.test(name));
+    const latest = files.sort().at(-1);
+    if (latest) return path.join(logDir, latest);
+  } catch {
+    // Retain support for older hosts with a gateway.log file.
+  }
+  return path.join(os.homedir(), '.openclaw', 'logs', 'gateway.log');
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,7 +132,20 @@ async function extractRecentErrors(logPath: string): Promise<string[]> {
       const lines = content.split('\n').filter(Boolean);
       // Only pick timestamped log entries at error/warn level,
       // ignoring stack trace fragments and other noise.
-      const errorLines = lines.filter((line) => TIMESTAMPED_LINE_RE.test(line) && ERROR_LEVEL_RE.test(line));
+      const errorLines = lines.flatMap((line) => {
+        try {
+          const entry = JSON.parse(line);
+          const level = entry._meta?.logLevelName;
+          if (!['WARN', 'ERROR', 'FATAL'].includes(level)) return [];
+          const message = [entry['0'], entry['1'], entry['2']]
+            .filter((value) => value !== undefined)
+            .map((value) => (typeof value === 'string' ? value : JSON.stringify(value)))
+            .join(' ');
+          return [redactSensitiveText(`${entry.time ?? ''} [${level}] ${message}`)];
+        } catch {
+          return TIMESTAMPED_LINE_RE.test(line) && ERROR_LEVEL_RE.test(line) ? [redactSensitiveText(line)] : [];
+        }
+      });
       return errorLines.slice(-MAX_ERROR_LINES);
     } finally {
       await fd.close();
@@ -169,7 +197,7 @@ function detectRegisteredTools(config: OpenClawConfig): string[] {
   return tools;
 }
 
-async function diagnoseAccount(account: LarkAccount): Promise<AccountDiagResult> {
+async function diagnoseAccount(account: LarkAccount, config: OpenClawConfig): Promise<AccountDiagResult> {
   const checks: DiagCheckResult[] = [];
   const result: AccountDiagResult = {
     accountId: account.accountId,
@@ -202,6 +230,29 @@ async function diagnoseAccount(account: LarkAccount): Promise<AccountDiagResult>
       name: 'API 连通性',
       status: 'skip',
       message: '凭证未配置，跳过',
+    });
+    return result;
+  }
+
+  const accounts = (config.channels?.feishu as { accounts?: Record<string, { appSecret?: unknown }> })?.accounts;
+  const secretPath =
+    accounts?.[account.accountId]?.appSecret !== undefined
+      ? `channels.feishu.accounts.${account.accountId}.appSecret`
+      : 'channels.feishu.appSecret';
+  try {
+    const resolved = await resolveConfiguredSecretInputString({
+      config,
+      env: process.env,
+      value: account.appSecret,
+      path: secretPath,
+    });
+    if (!resolved.value) throw new Error(resolved.unresolvedRefReason ?? 'appSecret unavailable');
+    account = { ...account, appSecret: resolved.value };
+  } catch (err) {
+    checks.push({
+      name: '凭证解析',
+      status: 'fail',
+      message: `SecretRef 解析失败: ${err instanceof Error ? err.message : String(err)}`,
     });
     return result;
   }
@@ -295,7 +346,7 @@ export async function runDiagnosis(params: { config: OpenClawConfig; logger?: Di
   });
 
   // -- Log file --
-  const logPath = path.join(os.homedir(), '.openclaw', 'logs', 'gateway.log');
+  const logPath = await resolveLogPath(globalCfg);
   let logExists = false;
   try {
     await fs.access(logPath);
@@ -313,7 +364,7 @@ export async function runDiagnosis(params: { config: OpenClawConfig; logger?: Di
   const accountResults: AccountDiagResult[] = [];
   for (const id of accountIds) {
     const account = getLarkAccount(globalCfg, id);
-    const result = await diagnoseAccount(account);
+    const result = await diagnoseAccount(account, globalCfg);
     accountResults.push(result);
   }
 
@@ -339,7 +390,7 @@ export async function runDiagnosis(params: { config: OpenClawConfig; logger?: Di
       nodeVersion: process.version,
       platform: process.platform,
       arch: process.arch,
-      pluginVersion: PLUGIN_VERSION,
+      pluginVersion: getPluginVersion(),
     },
     accounts: accountResults,
     toolsRegistered: tools,
@@ -475,8 +526,11 @@ function formatCheckCli(c: DiagCheckResult): string {
  * Scans the last 1MB of the log file for lines containing `[msg:{messageId}]`.
  * Returns matching lines in chronological order.
  */
-export async function traceByMessageId(messageId: string): Promise<string[]> {
-  const logPath = path.join(os.homedir(), '.openclaw', 'logs', 'gateway.log');
+export async function traceByMessageId(
+  messageId: string,
+  config: OpenClawConfig = LarkClient.globalConfig ?? {},
+): Promise<string[]> {
+  const logPath = await resolveLogPath(config);
   try {
     await fs.access(logPath);
   } catch {

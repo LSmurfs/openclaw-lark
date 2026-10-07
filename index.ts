@@ -17,6 +17,7 @@ import { registerFeishuMcpDocTools } from './src/tools/mcp/doc/index';
 import { registerFeishuOAuthTool } from './src/tools/oauth';
 import { registerFeishuOAuthBatchAuthTool } from './src/tools/oauth-batch-auth';
 import { registerAskUserQuestionTool } from './src/tools/ask-user-question';
+import { registerStreamCardSendTool } from './src/tools/stream-card-send';
 import {
   analyzeTrace,
   formatDiagReportCli,
@@ -126,6 +127,7 @@ const plugin = {
 
     // Register AskUserQuestion tool (interactive card-based user prompting)
     registerAskUserQuestionTool(api);
+    registerStreamCardSendTool(api);
 
     api.on('before_tool_call', (event, ctx) => {
       recordToolUseStart({
@@ -174,7 +176,7 @@ const plugin = {
           .action(async (opts: { trace?: string; analyze?: boolean }) => {
             try {
               if (opts.trace) {
-                const lines = await traceByMessageId(opts.trace);
+                const lines = await traceByMessageId(opts.trace, ctx.config);
                 // eslint-disable-next-line no-console -- CLI 命令直接输出到终端
                 console.log(formatTraceOutput(lines, opts.trace));
                 if (opts.analyze && lines.length > 0) {
