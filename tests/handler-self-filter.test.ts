@@ -9,9 +9,20 @@
  * cannot trigger bot-to-bot self loops once include_bot scope is enabled.
  */
 
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleFeishuMessage } from '../src/messaging/inbound/handler';
 import { setLarkRuntime } from '../src/core/runtime-store';
+import { resolveBotName } from '../src/messaging/inbound/user-name-cache';
+
+// Keep the real enrichment and gate, but never query Feishu with fixture credentials.
+vi.mock('../src/messaging/inbound/user-name-cache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/messaging/inbound/user-name-cache')>()),
+  resolveBotName: vi.fn().mockResolvedValue({}),
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 beforeAll(() => {
   setLarkRuntime({
@@ -73,6 +84,7 @@ describe('handleFeishuMessage self-echo filter', () => {
     expect(
       logs.some((l) => l.includes('drop self-echo') && l.includes('om_echo')),
     ).toBe(true);
+    expect(resolveBotName).not.toHaveBeenCalled();
   });
 
   it('does not filter when botOpenId is not yet populated (startup race)', async () => {
@@ -90,6 +102,8 @@ describe('handleFeishuMessage self-echo filter', () => {
     });
 
     expect(logs.some((l) => l.includes('drop self-echo'))).toBe(false);
+    expect(resolveBotName).toHaveBeenCalledOnce();
+    expect(logs.some((l) => l.includes('(allowBots=false)'))).toBe(true);
   });
 
   it('does not filter when sender differs from bot', async () => {
@@ -107,5 +121,7 @@ describe('handleFeishuMessage self-echo filter', () => {
     });
 
     expect(logs.some((l) => l.includes('drop self-echo'))).toBe(false);
+    expect(resolveBotName).toHaveBeenCalledOnce();
+    expect(logs.some((l) => l.includes('(allowBots=false)'))).toBe(true);
   });
 });

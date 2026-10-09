@@ -9,10 +9,21 @@
  * so handler.ts must not write anything to the chatHistories map.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HistoryEntry } from 'openclaw/plugin-sdk/reply-history';
 import { handleFeishuMessage } from '../src/messaging/inbound/handler';
 import { setLarkRuntime } from '../src/core/runtime-store';
+import { resolveBotName } from '../src/messaging/inbound/user-name-cache';
+
+// Keep the real enrichment and gate, but never query Feishu with fixture credentials.
+vi.mock('../src/messaging/inbound/user-name-cache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/messaging/inbound/user-name-cache')>()),
+  resolveBotName: vi.fn().mockResolvedValue({}),
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 beforeAll(() => {
   // Minimal runtime — gate.ts touches channel.groups; the bot path is rejected
@@ -77,6 +88,7 @@ function makeCfg(allowBots: false | 'mentions') {
 describe('handleFeishuMessage bot sender rejection does not touch chatHistories', () => {
   it('allowBots=false → no history entry written', async () => {
     const chatHistories = new Map<string, HistoryEntry[]>();
+    const log = vi.fn();
 
     await handleFeishuMessage({
       cfg: makeCfg(false),
@@ -84,13 +96,17 @@ describe('handleFeishuMessage bot sender rejection does not touch chatHistories'
       botOpenId: 'ou_me',
       accountId: 'acct1',
       chatHistories,
+      runtime: { log } as never,
     });
 
     expect(chatHistories.size).toBe(0);
+    expect(resolveBotName).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('(allowBots=false)'));
   });
 
   it('allowBots="mentions" + not mentioned → no history entry', async () => {
     const chatHistories = new Map<string, HistoryEntry[]>();
+    const log = vi.fn();
 
     await handleFeishuMessage({
       cfg: makeCfg('mentions'),
@@ -98,8 +114,11 @@ describe('handleFeishuMessage bot sender rejection does not touch chatHistories'
       botOpenId: 'ou_me',
       accountId: 'acct1',
       chatHistories,
+      runtime: { log } as never,
     });
 
     expect(chatHistories.size).toBe(0);
+    expect(resolveBotName).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('(allowBots=mentions, not mentioned)'));
   });
 });
