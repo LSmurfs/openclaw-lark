@@ -12,7 +12,7 @@
  *   5. Policy gate           → gate.ts
  *   6. User name prefetch    → enrich.ts (batch cache warm-up)
  *   7. Content resolution    → enrich.ts (media / quote, parallel)
- *   8. Command authorization → plugin-sdk/command-auth
+ *   8. Command authorization → SDK allowlists and runtime command gating
  *   9. Agent dispatch        → dispatch.ts
  */
 
@@ -23,7 +23,7 @@ import {
   DEFAULT_GROUP_HISTORY_LIMIT,
   recordPendingHistoryEntryIfEnabled,
 } from 'openclaw/plugin-sdk/reply-history';
-import { resolveSenderCommandAuthorization } from 'openclaw/plugin-sdk/command-auth';
+import { readStoreAllowFromForDmPolicy, resolveEffectiveAllowFromLists } from 'openclaw/plugin-sdk/channel-policy';
 import { isNormalizedSenderAllowed } from 'openclaw/plugin-sdk/allow-from';
 import type { FeishuMessageEvent } from '../types';
 import { getLarkAccount } from '../../core/accounts';
@@ -265,19 +265,29 @@ export async function handleFeishuMessage(params: {
     return explicitSenderPolicy === 'open' ? ['*'] : [];
   })();
 
-  const { commandAuthorized } = await resolveSenderCommandAuthorization({
-    rawBody: ctx.content,
-    cfg: accountScopedCfg,
-    isGroup,
+  const shouldComputeAuth = core.channel.commands.shouldComputeCommandAuthorized(ctx.content, accountScopedCfg);
+  const storeAllowFrom = await readStoreAllowFromForDmPolicy({
+    provider: 'feishu',
+    accountId: account.accountId,
     dmPolicy,
-    configuredAllowFrom: (accountFeishuCfg?.allowFrom ?? []).map(String),
-    configuredGroupAllowFrom,
-    senderId: ctx.senderId,
-    isSenderAllowed: (senderId, allowFrom) => isNormalizedSenderAllowed({ senderId, allowFrom }),
-    readAllowFromStore: () => readFeishuAllowFromStore(account.accountId),
-    shouldComputeCommandAuthorized: core.channel.commands.shouldComputeCommandAuthorized,
-    resolveCommandAuthorizedFromAuthorizers: core.channel.commands.resolveCommandAuthorizedFromAuthorizers,
+    shouldRead: !isGroup,
+    readStore: () => readFeishuAllowFromStore(account.accountId),
   });
+  const { effectiveAllowFrom, effectiveGroupAllowFrom } = resolveEffectiveAllowFromLists({
+    dmPolicy,
+    allowFrom: (accountFeishuCfg?.allowFrom ?? []).map(String),
+    groupAllowFrom: configuredGroupAllowFrom ?? [],
+    storeAllowFrom,
+  });
+  const commandAuthorized = shouldComputeAuth
+    ? core.channel.commands.resolveCommandAuthorizedFromAuthorizers({
+      useAccessGroups: true,
+      authorizers: [effectiveAllowFrom, effectiveGroupAllowFrom].map((allowFrom) => ({
+        configured: allowFrom.length > 0,
+        allowed: isNormalizedSenderAllowed({ senderId: ctx.senderId, allowFrom }),
+      })),
+    })
+    : undefined;
 
   // Bot-loop guard: cap consecutive bot↔bot turns so a runaway debate stops
   // itself. Only bot senders count; a human turn already reset the counter

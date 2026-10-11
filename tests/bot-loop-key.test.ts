@@ -47,7 +47,7 @@ vi.mock('../src/core/accounts', () => ({
 }));
 vi.mock('../src/core/lark-client', () => ({
   LarkClient: {
-    runtime: { channel: { commands: { shouldComputeCommandAuthorized: false, resolveCommandAuthorizedFromAuthorizers: vi.fn() } } },
+    runtime: { channel: { commands: { shouldComputeCommandAuthorized: vi.fn().mockReturnValue(false), resolveCommandAuthorizedFromAuthorizers: vi.fn() } } },
   },
 }));
 vi.mock('../src/core/lark-logger', () => ({ larkLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
@@ -58,9 +58,6 @@ vi.mock('../src/channel/chat-queue', () => ({
 vi.mock('openclaw/plugin-sdk/reply-history', () => ({
   DEFAULT_GROUP_HISTORY_LIMIT: 20,
   recordPendingHistoryEntryIfEnabled: vi.fn(),
-}));
-vi.mock('openclaw/plugin-sdk/command-auth', () => ({
-  resolveSenderCommandAuthorization: vi.fn().mockResolvedValue({ commandAuthorized: false }),
 }));
 vi.mock('openclaw/plugin-sdk/allow-from', () => ({ isNormalizedSenderAllowed: vi.fn().mockReturnValue(false) }));
 

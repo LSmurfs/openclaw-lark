@@ -116,8 +116,7 @@ export interface GateResult {
 /**
  * Read the pairing allowFrom store for the Feishu channel.
  *
- * Exported so that handler.ts can provide it as a closure to the SDK's
- * `resolveSenderCommandAuthorization` helper.
+ * Exported so handler.ts can reuse the account-scoped store for command authorization.
  */
 export { readAllowFromStore as readFeishuAllowFromStore };
 

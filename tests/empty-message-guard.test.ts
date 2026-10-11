@@ -1,11 +1,13 @@
 /**
- * Tests for the empty message early-rejection guard in handleFeishuMessage.
+ * Tests for empty-message rejection and command authorization in handleFeishuMessage.
  *
  * Verifies that messages with no text content and no media resources
  * are skipped before reaching the enrichment/gate/dispatch pipeline.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { shouldComputeCommandAuthorized } from 'openclaw/plugin-sdk/command-detection';
+import type { FeishuConfig, FeishuGroupConfig } from '../src/core/types';
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted)
@@ -43,10 +45,13 @@ vi.mock('../src/messaging/inbound/dispatch', () => ({
   dispatchToAgent: vi.fn(),
 }));
 
-vi.mock('../src/messaging/inbound/policy', () => ({
-  resolveFeishuGroupConfig: vi.fn(),
-  splitLegacyGroupAllowFrom: vi.fn().mockReturnValue({ senderAllowFrom: [] }),
-}));
+vi.mock('../src/messaging/inbound/policy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/messaging/inbound/policy')>();
+  return {
+    resolveFeishuGroupConfig: vi.fn(),
+    splitLegacyGroupAllowFrom: actual.splitLegacyGroupAllowFrom,
+  };
+});
 
 vi.mock('../src/core/accounts', () => ({
   getLarkAccount: vi.fn().mockReturnValue({
@@ -57,13 +62,13 @@ vi.mock('../src/core/accounts', () => ({
   }),
 }));
 
-vi.mock('../src/core/lark-client', () => ({
+vi.mock('../src/core/lark-client', async () => ({
   LarkClient: {
     runtime: {
       channel: {
         commands: {
-          shouldComputeCommandAuthorized: false,
-          resolveCommandAuthorizedFromAuthorizers: vi.fn(),
+          shouldComputeCommandAuthorized: vi.fn().mockReturnValue(false),
+          resolveCommandAuthorizedFromAuthorizers: (await import('openclaw/plugin-sdk/command-auth-native')).resolveCommandAuthorizedFromAuthorizers,
         },
       },
     },
@@ -87,19 +92,79 @@ vi.mock('openclaw/plugin-sdk/reply-history', () => ({
   recordPendingHistoryEntryIfEnabled: vi.fn(),
 }));
 
-vi.mock('openclaw/plugin-sdk/command-auth', () => ({
-  resolveSenderCommandAuthorization: vi.fn().mockResolvedValue({ commandAuthorized: false }),
-}));
-
-vi.mock('openclaw/plugin-sdk/allow-from', () => ({
-  isNormalizedSenderAllowed: vi.fn().mockReturnValue(false),
-}));
-
 // Import after mocks
 import { handleFeishuMessage } from '../src/messaging/inbound/handler';
 import { dispatchToAgent } from '../src/messaging/inbound/dispatch';
+import { readFeishuAllowFromStore } from '../src/messaging/inbound/gate';
+import { resolveFeishuGroupConfig } from '../src/messaging/inbound/policy';
+import { getLarkAccount } from '../src/core/accounts';
+import { LarkClient } from '../src/core/lark-client';
 
 const mockDispatchToAgent = vi.mocked(dispatchToAgent);
+
+describe('handleFeishuMessage command authorization with the public SDK', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(LarkClient.runtime.channel.commands.shouldComputeCommandAuthorized)
+      .mockImplementation(shouldComputeCommandAuthorized);
+    vi.mocked(readFeishuAllowFromStore).mockResolvedValue([]);
+    vi.mocked(resolveFeishuGroupConfig).mockReturnValue(undefined);
+    mockResolveMedia.mockResolvedValue({ mediaList: [], payload: undefined });
+    mockResolveQuotedContent.mockResolvedValue(undefined);
+  });
+
+  it.each<{
+    name: string;
+    config: Partial<FeishuConfig>;
+    isGroup?: boolean;
+    store?: string[];
+    groupConfig?: FeishuGroupConfig;
+    expected?: boolean;
+    readsStore?: boolean;
+    storeError?: boolean;
+    content?: string;
+  }>([
+    { name: 'configured DM owner', config: { allowFrom: ['ou_sender'] }, expected: true, readsStore: true },
+    { name: 'unknown DM sender', config: {}, expected: false, readsStore: true },
+    { name: 'paired DM sender', config: {}, store: ['ou_sender'], expected: true, readsStore: true },
+    { name: 'unreadable pairing store fails closed', config: {}, storeError: true, expected: false, readsStore: true },
+    { name: 'configured owner survives a store error', config: { allowFrom: ['ou_sender'] }, storeError: true, expected: true, readsStore: true },
+    { name: 'allowlist DM ignores pairing store', config: { dmPolicy: 'allowlist' }, store: ['ou_sender'], expected: false },
+    { name: 'allowlist DM owner', config: { dmPolicy: 'allowlist', allowFrom: ['ou_sender'] }, expected: true },
+    { name: 'open DM does not grant command access', config: { dmPolicy: 'open' }, store: ['ou_sender'], expected: false },
+    { name: 'explicit wildcard DM command access', config: { dmPolicy: 'open', allowFrom: ['*'] }, expected: true },
+    { name: 'group owner', config: { allowFrom: ['ou_sender'] }, isGroup: true, expected: true },
+    { name: 'group sender allowlist', config: { groupAllowFrom: ['ou_sender'] }, isGroup: true, expected: true },
+    { name: 'per-group sender allowlist', config: {}, groupConfig: { allowFrom: ['ou_sender'] }, isGroup: true, expected: true },
+    { name: 'group ignores paired DM senders', config: {}, store: ['ou_sender'], isGroup: true, expected: false },
+    { name: 'legacy chat ID is not a sender grant', config: { groupAllowFrom: ['oc_chat'] }, isGroup: true, expected: false },
+    { name: 'explicitly open group', config: { groupPolicy: 'open' }, isGroup: true, expected: true },
+    { name: 'open group with a sender allowlist stays restricted', config: { groupPolicy: 'open', groupAllowFrom: ['ou_other'] }, isGroup: true, expected: false },
+    { name: 'ordinary text has no command decision', config: { allowFrom: ['ou_sender'] }, content: 'hello', readsStore: true },
+  ])('$name', async ({ config: overrides, isGroup, store, groupConfig, expected, readsStore, storeError, content = '/status' }) => {
+    const config: FeishuConfig = { allowFrom: undefined, groupAllowFrom: undefined, ...overrides };
+    vi.mocked(getLarkAccount).mockReturnValue({
+      accountId: 'test-account', config, enabled: true, configured: false, brand: 'feishu',
+    });
+    vi.mocked(resolveFeishuGroupConfig).mockReturnValue(groupConfig);
+    if (storeError) vi.mocked(readFeishuAllowFromStore).mockRejectedValueOnce(new Error('store unavailable'));
+    else vi.mocked(readFeishuAllowFromStore).mockResolvedValue(store ?? []);
+    const ctx = { ...makeCtx(content), chatType: isGroup ? 'group' as const : 'p2p' as const };
+    mockParseMessageEvent.mockResolvedValue(ctx);
+    mockResolveSenderInfo.mockResolvedValue({ ctx, permissionError: undefined });
+
+    await handleFeishuMessage({
+      cfg: { channels: { feishu: { allowFrom: ['ou_other'] } } },
+      event: makeEvent(content),
+    });
+
+    expect(mockDispatchToAgent).toHaveBeenCalledWith(expect.objectContaining({ commandAuthorized: expected }));
+    expect(LarkClient.runtime.channel.commands.shouldComputeCommandAuthorized)
+      .toHaveBeenCalledWith(content, expect.objectContaining({ channels: { feishu: config } }));
+    if (readsStore) expect(readFeishuAllowFromStore).toHaveBeenCalledExactlyOnceWith('test-account');
+    else expect(readFeishuAllowFromStore).not.toHaveBeenCalled();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
