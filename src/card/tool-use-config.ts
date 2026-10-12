@@ -74,6 +74,7 @@ function resolveSessionVerboseMode(cfg: OpenClawConfig, sessionKey: string, agen
 
 function resolveCandidateSessionKeys(cfg: OpenClawConfig, sessionKey: string): string[] {
   const key = sessionKey.trim().toLowerCase();
+  if (cfg.agents?.ownership === 'explicit') return [key];
   const defaultAgentId = resolveDefaultAgentId(cfg as Record<string, unknown>);
   const fallbackKey = key.replace(/^(agent):[^:]+:/, `$1:${defaultAgentId}:`);
   return fallbackKey !== key ? [key, fallbackKey] : [key];

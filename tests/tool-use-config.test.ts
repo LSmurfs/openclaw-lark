@@ -14,6 +14,36 @@ beforeEach(() => {
 });
 
 describe('resolveToolUseDisplayConfig', () => {
+  it.each(['off', 'on', 'full'] as const)('reads %s from the explicitly owned agent session', (mode) => {
+    sessions.set('agent:hr:feishu:dm:user-1', { verboseLevel: mode });
+    const config = resolveToolUseDisplayConfig({
+      cfg: {
+        agents: { ownership: 'explicit', entries: { main: {}, hr: {} }, defaults: { verboseDefault: 'on' } },
+      } as never,
+      feishuCfg: {} as never,
+      agentId: 'hr',
+      sessionKey: 'agent:hr:feishu:dm:user-1',
+    });
+
+    expect(config.mode).toBe(mode);
+    expect(config.showToolUse).toBe(mode !== 'off');
+    expect(config.showToolResultDetails).toBe(mode === 'full');
+  });
+
+  it('uses the config default rather than another agent session under explicit ownership', () => {
+    sessions.set('agent:main:feishu:dm:user-1', { verboseLevel: 'full' });
+    const config = resolveToolUseDisplayConfig({
+      cfg: {
+        agents: { ownership: 'explicit', entries: { main: {}, hr: {} }, defaults: { verboseDefault: 'off' } },
+      } as never,
+      feishuCfg: {} as never,
+      agentId: 'hr',
+      sessionKey: 'agent:hr:feishu:dm:user-1',
+    });
+
+    expect(config.mode).toBe('off');
+  });
+
   it('uses session verbose override from the session store', () => {
     sessions.set('agent:main:feishu:dm:user-1', { sessionId: 's1', updatedAt: 1, verboseLevel: 'full' });
 

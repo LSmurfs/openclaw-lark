@@ -150,11 +150,10 @@ export class StreamingCardController {
       // using the default agent ID → "agent:main:main".  This means metrics
       // written by the SDK always land under "agent:<defaultAgentId>:…"
       // regardless of the account-scoped agent ID the plugin routing generated.
-      // Fallback: when the primary key misses, try replacing the agent-id
-      // segment with the resolved default agent ID.
+      // Legacy fallback only: explicit ownership must not select another agent.
       // TODO: remove once the SDK preserves the original agent ID during the
       // request→store key round-trip.
-      const defaultAgentId = primaryEntry
+      const defaultAgentId = primaryEntry || this.deps.cfg.agents?.ownership === 'explicit'
         ? this.deps.agentId
         : resolveDefaultAgentId(this.deps.cfg as Record<string, unknown>);
       const fallbackKey = key.replace(/^(agent):[^:]+:/, `$1:${defaultAgentId}:`);

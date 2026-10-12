@@ -13,9 +13,9 @@ vi.mock('openclaw/plugin-sdk/session-store-runtime', () => ({
 
 const { StreamingCardController } = await import('../src/card/streaming-card-controller');
 
-function readMetrics(agentId: string) {
+function readMetrics(agentId: string, cfg: Record<string, unknown> = {}) {
   const controller = Object.create(StreamingCardController.prototype);
-  controller.deps = { cfg: {}, agentId, sessionKey: `agent:${agentId}:feishu:dm:user-1` };
+  controller.deps = { cfg, agentId, sessionKey: `agent:${agentId}:feishu:dm:user-1` };
   return controller.getFooterSessionMetrics();
 }
 
@@ -25,6 +25,17 @@ beforeEach(() => {
 });
 
 describe('streaming card footer metrics', () => {
+  it('does not resolve a default agent when an explicit-owner session is missing', async () => {
+    resolveDefaultAgentId.mockImplementation(() => {
+      throw new Error('AgentSelectionRequiredError');
+    });
+    sessions.set('agent:main:feishu:dm:user-1', { model: 'other-agent-model' });
+    const cfg = { agents: { ownership: 'explicit', entries: { main: {}, hr: {} } } };
+
+    expect(await readMetrics('hr', cfg)).toBeUndefined();
+    expect(resolveDefaultAgentId).not.toHaveBeenCalled();
+  });
+
   it('reads the explicit agent session without requiring a default agent', async () => {
     resolveDefaultAgentId.mockImplementation(() => {
       throw new Error('AgentSelectionRequiredError');
