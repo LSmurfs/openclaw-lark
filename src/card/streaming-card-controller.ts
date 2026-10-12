@@ -141,6 +141,8 @@ export class StreamingCardController {
       const sessionStorePath = cfgWithSession.sessions?.store ?? cfgWithSession.session?.store;
       const storePath = resolveStorePath(sessionStorePath, { agentId: this.deps.agentId });
       const key = this.deps.sessionKey.trim().toLowerCase();
+      // Explicit agent sessions must not depend on a default agent being configured.
+      const primaryEntry = getSessionEntry({ agentId: this.deps.agentId, storePath, sessionKey: key });
 
       // WORKAROUND: SDK session key round-trip bug.
       // The SDK's toAgentRequestSessionKey() strips the agent scope from keys
@@ -152,15 +154,19 @@ export class StreamingCardController {
       // segment with the resolved default agent ID.
       // TODO: remove once the SDK preserves the original agent ID during the
       // request→store key round-trip.
-      const defaultAgentId = resolveDefaultAgentId(this.deps.cfg as Record<string, unknown>);
+      const defaultAgentId = primaryEntry
+        ? this.deps.agentId
+        : resolveDefaultAgentId(this.deps.cfg as Record<string, unknown>);
       const fallbackKey = key.replace(/^(agent):[^:]+:/, `$1:${defaultAgentId}:`);
       const candidateKeys = fallbackKey !== key ? [key, fallbackKey] : [key];
 
       // OpenClaw >=2026.8 keeps sessions in SQLite; read one row per candidate key.
       for (const candidate of candidateKeys) {
-        const entry = getSessionEntry({ agentId: this.deps.agentId, storePath, sessionKey: candidate }) as
-          | Record<string, unknown>
-          | undefined;
+        const entry = (
+          candidate === key
+            ? primaryEntry
+            : getSessionEntry({ agentId: this.deps.agentId, storePath, sessionKey: candidate })
+        ) as Record<string, unknown> | undefined;
         if (!entry) continue;
         log.debug('footer metrics lookup: session entry found', {
           sessionKey: this.deps.sessionKey,
